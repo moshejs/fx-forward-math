@@ -1,6 +1,6 @@
 {
   "name": "fx-forward-math",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "FX trading conventions math — forward points ↔ outright forwards, covered-interest-parity forwards and implied yields (ACT/360 vs ACT/365F per currency), cross-rate derivation, triangular-arbitrage checks, pip / big-figure handling, and pip value. Zero dependencies.",
   "keywords": [
     "fx",
