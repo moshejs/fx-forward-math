@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   crossRate,
   forwardPoints,
+  impliedBaseRate,
+  impliedForward,
+  impliedForwardPoints,
+  impliedQuoteRate,
+  moneyMarketBasis,
   outrightForward,
   parsePair,
   pipDecimals,
@@ -12,6 +17,7 @@ import {
   splitRate,
   triangularArbitrage,
 } from "../src/index.js";
+import { CIP_CASES, ROUNDING_CASES } from "./fixtures.js";
 
 describe("pair parsing and pip conventions", () => {
   it("parses BASE/QUOTE", () => {
@@ -124,5 +130,100 @@ describe("validation", () => {
     expect(() => outrightForward("EUR/USD", 1.08, Number.NaN)).toThrow(RangeError);
     expect(() => forwardPoints("EUR/USD", 1.08, -1)).toThrow(RangeError);
     expect(() => pipDecimals("EUR/USD", -1)).toThrow(RangeError);
+  });
+});
+
+describe("regressions (audit 2026-10)", () => {
+  it("splitRate handles rates whose big figure is not exact in binary", () => {
+    // 1.13 / 0.01 = 112.99999999999999 → previously { bigFigure: 1.12, pips: 100 }
+    expect(splitRate("EUR/USD", 1.13)).toEqual({ bigFigure: 1.13, pips: 0 });
+    expect(splitRate("EUR/USD", 0.29)).toEqual({ bigFigure: 0.29, pips: 0 });
+    expect(splitRate("GBP/USD", 1.1452)).toEqual({ bigFigure: 1.14, pips: 52 });
+  });
+
+  it("roundToPip rounds decimal halves up", () => {
+    // 44.76445 × 10⁴ = 447644.49999… in binary → previously 44.7644
+    expect(roundToPip("NZD/USD", 44.76445)).toBe(44.7645);
+    expect(roundToPip("EUR/USD", 1.00005)).toBe(1.0001);
+    expect(() => roundToPip("EUR/USD", Number.NaN)).toThrow(RangeError);
+    expect(() => roundToPip("EUR/USD", -1)).toThrow(RangeError);
+  });
+
+  it("rounding and big-figure split match decimal arithmetic", () => {
+    for (const c of ROUNDING_CASES) {
+      const x = Number(c.rate);
+      expect(roundToPip(c.pair, x), `${c.pair} ${c.rate}`).toBe(Number(c.rounded));
+      expect(splitRate(c.pair, x), `${c.pair} ${c.rate}`).toEqual({
+        bigFigure: Number(c.bigFigure),
+        pips: Number(c.pips),
+      });
+    }
+  });
+
+  it("triangularArbitrage orients the implied cross to the quoted pair", () => {
+    const check = triangularArbitrage("EUR/USD", 1.085, "USD/JPY", 156.2, "JPY/EUR", 1 / (1.085 * 156.2));
+    expect(check.impliedCross).toBeCloseTo(1 / (1.085 * 156.2), 12);
+    expect(check.arbitrageFree).toBe(true);
+  });
+
+  it("triangularArbitrage rejects a cross that is not formed by the legs", () => {
+    expect(() => triangularArbitrage("EUR/USD", 1.085, "USD/JPY", 156.2, "GBP/CHF", 1.1)).toThrow(
+      /not the cross/,
+    );
+    expect(() => triangularArbitrage("EUR/USD", 1.085, "USD/JPY", 156.2, "EUR/JPY", 169, -1)).toThrow(
+      RangeError,
+    );
+  });
+
+  it("outrightForward rejects points that make the outright non-positive", () => {
+    expect(() => outrightForward("EUR/USD", 1.08, -20_000)).toThrow(RangeError);
+  });
+});
+
+describe("covered interest parity", () => {
+  it("money-market day-count basis per currency", () => {
+    expect(moneyMarketBasis("USD")).toBe(360);
+    expect(moneyMarketBasis("EUR")).toBe(360);
+    expect(moneyMarketBasis("CHF")).toBe(360);
+    for (const c of ["GBP", "JPY", "AUD", "NZD", "CAD", "HKD", "SGD", "ZAR"]) {
+      expect(moneyMarketBasis(c), c).toBe(365);
+    }
+    expect(() => moneyMarketBasis("BRL")).toThrow(/explicitly/);
+  });
+
+  it(`impliedForward matches QuantLib simple-interest factors (${CIP_CASES.length} cases)`, () => {
+    for (const c of CIP_CASES) {
+      expect(impliedForward(c) / c.forward - 1, JSON.stringify(c)).toBeCloseTo(0, 13);
+    }
+  });
+
+  it("implied yields invert impliedForward", () => {
+    for (const c of CIP_CASES) {
+      expect(impliedQuoteRate({ ...c, forward: c.forward })).toBeCloseTo(c.quoteRate, 11);
+      expect(impliedBaseRate({ ...c, forward: c.forward })).toBeCloseTo(c.baseRate, 11);
+    }
+  });
+
+  it("uses each currency's own basis (GBP/USD: GBP ACT/365F, USD ACT/360)", () => {
+    const p = { pair: "GBP/USD", spot: 1.27, days: 91, baseRate: 0.045, quoteRate: 0.043 };
+    expect(impliedForward(p)).toBeCloseTo((1.27 * (1 + 0.043 * (91 / 360))) / (1 + 0.045 * (91 / 365)), 14);
+    // overriding both bases to 360 gives a different answer
+    expect(impliedForward({ ...p, baseBasis: 360 })).not.toBeCloseTo(impliedForward(p), 6);
+  });
+
+  it("implied forward points scale by the pip", () => {
+    const p = { pair: "USD/JPY", spot: 150, days: 92, baseRate: 0.043, quoteRate: 0.005 };
+    expect(impliedForwardPoints(p)).toBeCloseTo((impliedForward(p) - 150) / 0.01, 8);
+    expect(impliedForwardPoints(p)).toBeLessThan(0); // higher-yielding base trades at a forward discount
+  });
+
+  it("validates inputs", () => {
+    const p = { pair: "EUR/USD", spot: 1.08, days: 90, baseRate: 0.02, quoteRate: 0.04 };
+    expect(() => impliedForward({ ...p, days: 0 })).toThrow(RangeError);
+    expect(() => impliedForward({ ...p, baseRate: Number.NaN })).toThrow(RangeError);
+    expect(() => impliedForward({ ...p, quoteRate: -1 })).toThrow(RangeError);
+    expect(() => impliedForward({ ...p, quoteBasis: 252 as 360 })).toThrow(RangeError);
+    expect(() => impliedForward({ ...p, pair: "USD/BRL" })).toThrow(RangeError);
+    expect(impliedForward({ ...p, pair: "USD/BRL", quoteBasis: 365 })).toBeGreaterThan(0);
   });
 });
