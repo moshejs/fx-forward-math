@@ -1,6 +1,6 @@
 # fx-forward-math
 
-FX **trading conventions** math — forward points ↔ outright forwards, cross-rate derivation, triangular-arbitrage checks, pip / big-figure handling, and pip value. Zero dependencies.
+FX **trading conventions** math — forward points ↔ outright forwards, covered-interest-parity forwards and implied yields (per-currency ACT/360 vs ACT/365F), cross-rate derivation, triangular-arbitrage checks, pip / big-figure handling, and pip value. Zero dependencies.
 
 ```
 npm install fx-forward-math
@@ -23,6 +23,10 @@ crossRate("EUR/USD", 1.0850, "USD/JPY", 156.20);  // 169.477
 
 triangularArbitrage("EUR/USD", 1.0850, "USD/JPY", 156.20, "EUR/JPY", 169.60);
 // { impliedCross: 169.477, differencePips: 12.3, arbitrageFree: false }
+
+// Covered interest parity: 3M (92 days) EUR/USD, EUR 2.00%, USD 4.30% (both ACT/360)
+impliedForward({ pair: "EUR/USD", spot: 1.0850, days: 92, baseRate: 0.02, quoteRate: 0.043 }); // 1.091345
+impliedForwardPoints({ pair: "EUR/USD", spot: 1.0850, days: 92, baseRate: 0.02, quoteRate: 0.043 }); // 63.45
 ```
 
 ## API
@@ -30,12 +34,17 @@ triangularArbitrage("EUR/USD", 1.0850, "USD/JPY", 156.20, "EUR/JPY", 169.60);
 Pairs are `"BASE/QUOTE"`; the rate is how many QUOTE units one BASE unit buys. Pip size is inferred from the quote currency (JPY-quoted pairs → 0.01, most others → 0.0001) and overridable everywhere.
 
 - **`outrightForward(pair, spot, forwardPoints)`** / **`forwardPoints(pair, spot, outright)`** — convert both ways.
+- **`impliedForward({ pair, spot, days, baseRate, quoteRate, baseBasis?, quoteBasis? })`** — covered interest parity with simple money-market interest: `spot × (1 + r_quote × days/B_quote) / (1 + r_base × days/B_base)`. Rates are decimals (`0.043` = 4.30%), `days` are calendar days from spot to the forward value date. **`impliedForwardPoints(params)`** gives the same in points.
+- **`impliedQuoteRate({ pair, spot, forward, days, baseRate, … })`** / **`impliedBaseRate({ …, quoteRate })`** — the FX-implied yield of one currency given the other's rate.
+- **`moneyMarketBasis(currency)`** — the default day-count basis: the basis of the currency's overnight risk-free rate (as in OpenGamma Strata). ACT/360: USD, EUR, CHF, SEK, DKK, CZK, CLP, COP. ACT/365F: GBP, JPY, AUD, NZD, CAD, HKD, SGD, ZAR, PLN, HUF, ILS, INR, IDR, THB, TRY, RUB, SAR. Other currencies throw — pass `baseBasis` / `quoteBasis` (360 or 365); BUS/252 (BRL) is not supported.
 - **`crossRate(pairA, rateA, pairB, rateB)`** — derive the cross from two legs sharing a currency; returns the rate of *A's non-shared currency / B's non-shared currency* (any leg orientation).
-- **`triangularArbitrage(legA, rA, legB, rB, crossPair, crossQuote, tolerancePips?)`** — implied vs quoted cross and whether they agree.
+- **`triangularArbitrage(legA, rA, legB, rB, crossPair, crossQuote, tolerancePips?)`** — implied vs quoted cross (the implied cross is oriented to `crossPair`, which must be formed by the two legs' outer currencies) and whether they agree.
 - **`pipValueQuote(pair, notional)`** / **`pipValueBase(pair, notional, rate)`** — value of one pip.
-- **`splitRate(pair, rate)`** → `{ bigFigure, pips }`; **`roundToPip(pair, rate)`**; **`pipSize`**, **`pipDecimals`**, **`parsePair`**.
+- **`splitRate(pair, rate)`** → `{ bigFigure, pips }` (pips to 4 dp); **`roundToPip(pair, rate)`** (half-up on the decimal value, so `1.00005` → `1.0001`); **`pipSize`**, **`pipDecimals`**, **`parsePair`**.
 
 All rates must be positive and finite, else `RangeError`.
+
+Pip conventions for exotic quote currencies vary by venue (e.g. USD/IDR and USD/KRW forward points are often quoted in whole units); the built-in table covers JPY, KRW, CLP, HUF, IDR and TWD at 2 decimals and everything else at 4 — pass the `pipDecimals` override where your market differs.
 
 ## Related
 
